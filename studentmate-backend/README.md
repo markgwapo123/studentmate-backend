@@ -1,6 +1,6 @@
 # StudentMate backend — MongoDB Atlas + Render
 
-This is the API only. The current StudentMate frontend still saves in localStorage until its login and sync integration are added after deployment. Do not paste database passwords into chat or GitHub.
+This is the API only. The StudentMate frontend supports student accounts and cloud sync. Admin accounts are created only from Render environment variables; public registration always creates a student. Keep all database and admin credentials in Render secrets, never GitHub or chat.
 
 ## Deploy step by step
 
@@ -15,12 +15,15 @@ This is the API only. The current StudentMate frontend still saves in localStora
 | `MONGODB_DB` | `studentmate` |
 | `ALLOWED_ORIGINS` | `https://studentmate-master.openpond.chatgpt.site` |
 | `NODE_ENV` | `production` |
+| `ADMIN_EMAIL` | Dedicated admin email; optional until you create the first admin. |
+| `ADMIN_PASSWORD` | Strong password, 16–128 characters; set together with `ADMIN_EMAIL`. |
+| `ADMIN_NAME` | Optional display name, defaults to `StudentMate Admin`. |
 
 Render supplies `PORT`; do not set it manually there.
 
 5. In the Render service's Connect → Outbound section, copy every listed outbound IP/CIDR range and add it to Atlas Database & Network Access → IP Access List. This allows the backend to reach Atlas. If the first deploy fails while access is being configured, redeploy after the changes take effect.
 6. Open `https://YOUR-SERVICE.onrender.com/health`. Success returns `{"status":"ok","database":"connected"}`. This checks an actual database ping.
-7. Give Boo the Render service URL (not the connection string or password). The next step is to add frontend register/login, authenticated cloud saves, conflict handling, and an explicit option to import existing local records. Until then, the live frontend remains local-only.
+7. Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` in Render to create the first admin on startup. If that email already belongs to a student, startup stops safely; choose a new email. The admin dashboard shows account and record counts without exposing student notes or assignment content. Public registration cannot create admins.
 
 ## Local development
 
@@ -28,7 +31,7 @@ Use Node.js 22 or newer. Run `npm ci`. Copy `.env.example` to `.env` and fill in
 
 ## API contract
 
-All payloads are JSON. Register/login return an opaque token with a seven-day expiry. Send it as `Authorization: Bearer TOKEN` on authenticated requests. Passwords are hashed with scrypt; session tokens are hashed before storage. Logout deletes the session. Data access is always limited to the signed-in user. CORS restricts browser origins but authentication protects the API independently.
+All payloads are JSON. Register/login return an opaque token with a seven-day expiry and a server-assigned role (`student` or `admin`). Public registration always assigns `student`. Send it as `Authorization: Bearer TOKEN` on authenticated requests. Passwords are hashed with scrypt; session tokens are hashed before storage. Logout deletes the session. Data access is always limited to the signed-in user. CORS restricts browser origins but authentication protects the API independently.
 
 | Method | Endpoint | Body / response |
 | --- | --- | --- |
@@ -36,6 +39,7 @@ All payloads are JSON. Register/login return an opaque token with a seven-day ex
 | POST | `/api/auth/register` | `{name,email,password}`; password 12–128 characters |
 | POST | `/api/auth/login` | `{email,password}` |
 | POST | `/api/auth/logout` | Authenticated; revokes token |
+| GET | `/api/admin/dashboard` | Admin only; aggregate counts and a limited student list, with no private workspace content. |
 | GET | `/api/workspace` | Authenticated; returns `{data,revision}` |
 | PUT | `/api/workspace` | Authenticated; body `{data,revision}`; returns next revision |
 
