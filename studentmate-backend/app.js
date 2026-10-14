@@ -4,11 +4,26 @@ import {rateLimit} from 'express-rate-limit';
 import {randomBytes} from 'node:crypto';
 import {hashPassword,verifyPassword,tokenHash,validCredentials,validRegistrationPassword,emptyWorkspace} from './security.js';
 import {validData} from './validation.js';
-export function createApp(db,allowedOrigins){
- const app=express();app.set('trust proxy',1);app.disable('x-powered-by');app.use(helmet());
+export function createApp(db,allowedOrigins,{isMongoConnected=()=>false}={}){
+ const app=express();app.set('trust proxy',1);app.disable('x-powered-by');
+ // Public probe precedes parsing, auth, rate limits, and security guards.
+ const healthCors=(req,res,next)=>{
+  const origin=req.get('origin');res.vary('Origin');
+  if(origin&&(allowedOrigins.includes(origin)||origin==='null'||origin.startsWith('file://'))){
+   res.set('Access-Control-Allow-Origin',origin);
+   res.set('Access-Control-Allow-Methods','GET,OPTIONS');
+   res.set('Access-Control-Allow-Headers','Content-Type');
+  }
+  res.set('Cache-Control','no-store');next();
+ };
+ app.options('/health',healthCors,(req,res)=>res.sendStatus(204));
+ app.get('/health',healthCors,(req,res)=>{
+  const connected=isMongoConnected();
+  res.status(connected?200:503).json({status:'ok',uptime:process.uptime(),mongo:connected?'connected':'disconnected',timestamp:new Date().toISOString()});
+ });
+ app.use(helmet());
  app.use((req,res,next)=>{const origin=req.get('origin');if(origin&&!allowedOrigins.includes(origin))return res.status(403).json({error:'Origin not allowed'});if(origin){res.set('Access-Control-Allow-Origin',origin);res.vary('Origin');res.set('Access-Control-Allow-Methods','GET,POST,PUT,OPTIONS');res.set('Access-Control-Allow-Headers','Authorization,Content-Type');}if(req.method==='OPTIONS')return res.sendStatus(204);next()});
  app.use(express.json({limit:'2mb'}));app.use('/api',rateLimit({windowMs:60000,limit:120,standardHeaders:'draft-8',legacyHeaders:false}));
- app.get('/health',async(req,res)=>{try{await db.command({ping:1});res.json({status:'ok',database:'connected'})}catch{res.status(503).json({status:'unavailable'})}});
  const authLimit=rateLimit({windowMs:15*60000,limit:20,standardHeaders:'draft-8',legacyHeaders:false});
  async function issue(user,res){const token=randomBytes(32).toString('base64url');const expiresAt=new Date(Date.now()+7*86400000);await db.collection('sessions').insertOne({tokenHash:tokenHash(token),userId:user._id,role:user.role||'student',expiresAt});res.set('Cache-Control','no-store');res.json({token,expiresAt,user:{id:user._id.toString(),name:user.name,email:user.email,role:user.role||'student'}})}
  app.post('/api/auth/register',authLimit,async(req,res)=>{const b=req.body;if(!validCredentials(b)||!validRegistrationPassword(b.password)||typeof b.name!=='string'||!b.name.trim()||b.name.trim().length>40)return res.status(400).json({error:'Use a valid name and email. Password must be 8–128 characters with an uppercase letter, a number and a special character.'});const email=b.email.trim().toLowerCase(),name=b.name.trim();try{const result=await db.collection('users').insertOne({email,name,role:'student',passwordHash:await hashPassword(b.password),workspace:emptyWorkspace(name),revision:0,createdAt:new Date()});res.status(201);await issue({_id:result.insertedId,email,name},res)}catch(e){if(e.code===11000)return res.status(409).json({error:'This email is already registered.'});throw e}});
